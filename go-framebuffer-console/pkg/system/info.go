@@ -31,37 +31,37 @@ type SystemInfo struct {
 
 func GetSystemInfo() (*SystemInfo, error) {
 	info := &SystemInfo{}
-	
+
 	var err error
 	info.Uptime, err = getUptime()
 	if err != nil {
 		info.Uptime = "未知"
 	}
-	
+
 	info.CPUModel, info.CPUCores, err = getCPUInfo()
 	if err != nil {
 		info.CPUModel = "未知"
 		info.CPUCores = runtime.NumCPU()
 	}
-	
+
 	info.MemoryUsage, err = getMemoryUsage()
 	if err != nil {
 		info.MemoryUsage = "未知"
 	}
-	
+
 	info.DiskSize, info.DiskCount, err = getDiskInfo()
 	if err != nil {
 		info.DiskSize = "未知"
 		info.DiskCount = 0
 	}
-	
+
 	info.CurrentTime = time.Now().Format("2006-01-02 15:04:05")
-	
+
 	info.IPAddress, err = getIPAddress()
 	if err != nil {
 		info.IPAddress = "未知"
 	}
-	
+
 	return info, nil
 }
 
@@ -70,26 +70,26 @@ func getUptime() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读取uptime文件失败: %v", err)
 	}
-	
+
 	fields := strings.Fields(string(data))
 	if len(fields) < 1 {
 		return "", fmt.Errorf("invalid uptime format")
 	}
-	
+
 	uptimeSeconds, err := strconv.ParseFloat(fields[0], 64)
 	if err != nil {
 		return "", fmt.Errorf("解析uptime数据失败: %v", err)
 	}
-	
+
 	// 防止负数和过大的值
 	if uptimeSeconds < 0 || uptimeSeconds > 365*24*3600*100 { // 限制100年
 		return "", fmt.Errorf("不合理的uptime值: %f", uptimeSeconds)
 	}
-	
+
 	days := int(uptimeSeconds) / 86400
 	hours := (int(uptimeSeconds) % 86400) / 3600
 	minutes := (int(uptimeSeconds) % 3600) / 60
-	
+
 	return fmt.Sprintf("%d天 %d小时 %d分钟", days, hours, minutes), nil
 }
 
@@ -98,17 +98,17 @@ func getCPUInfo() (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("读取CPU信息失败: %v", err)
 	}
-	
+
 	lines := strings.Split(string(data), "\n")
 	cpuModel := ""
 	cpuCount := 0
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		if strings.HasPrefix(line, "model name") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
@@ -127,14 +127,14 @@ func getCPUInfo() (string, int, error) {
 			}
 		}
 	}
-	
+
 	if cpuModel == "" {
 		cpuModel = "未知处理器"
 	}
 	if cpuCount == 0 {
 		cpuCount = runtime.NumCPU()
 	}
-	
+
 	return cpuModel, cpuCount, nil
 }
 
@@ -143,16 +143,16 @@ func getMemoryUsage() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读取内存信息失败: %v", err)
 	}
-	
+
 	lines := strings.Split(string(data), "\n")
 	var memTotal, memAvailable int64
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		if strings.HasPrefix(line, "MemTotal:") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
@@ -170,7 +170,7 @@ func getMemoryUsage() (string, error) {
 			}
 		}
 	}
-	
+
 	// 数据有效性检查
 	if memTotal <= 0 || memTotal > 1024*1024*1024 { // 限制最大1TB
 		return "未知", nil
@@ -178,13 +178,13 @@ func getMemoryUsage() (string, error) {
 	if memAvailable < 0 || memAvailable > memTotal {
 		memAvailable = 0
 	}
-	
+
 	memUsed := memTotal - memAvailable
 	usagePercent := float64(memUsed) / float64(memTotal) * 100
-	
-	return fmt.Sprintf("%.1f%% (已用: %s / 总计: %s)", 
-		usagePercent, 
-		formatBytes(memUsed*1024), 
+
+	return fmt.Sprintf("%.1f%% (已用: %s / 总计: %s)",
+		usagePercent,
+		formatBytes(memUsed*1024),
 		formatBytes(memTotal*1024)), nil
 }
 
@@ -194,21 +194,21 @@ func getDiskInfo() (string, int, error) {
 	if err != nil {
 		return "", 0, fmt.Errorf("获取磁盘信息失败: %v", err)
 	}
-	
+
 	// 检查数据的合理性
 	if stat.Blocks == 0 || stat.Bsize == 0 {
 		return "未知", 1, nil
 	}
-	
+
 	totalBytes := stat.Blocks * uint64(stat.Bsize)
 	// 防止溢出
 	if totalBytes > 1024*1024*1024*1024*1024 { // 限制最大1PB
 		return "过大", 1, nil
 	}
-	
+
 	diskSize := formatBytes(int64(totalBytes))
 	diskCount := 1
-	
+
 	if data, err := os.ReadFile("/proc/mounts"); err == nil {
 		lines := strings.Split(string(data), "\n")
 		diskDevices := make(map[string]bool)
@@ -217,7 +217,7 @@ func getDiskInfo() (string, int, error) {
 			if line == "" {
 				continue
 			}
-			
+
 			fields := strings.Fields(line)
 			if len(fields) >= 1 && strings.HasPrefix(fields[0], "/dev/") {
 				diskDevices[fields[0]] = true
@@ -232,7 +232,7 @@ func getDiskInfo() (string, int, error) {
 			diskCount = 1
 		}
 	}
-	
+
 	return diskSize, diskCount, nil
 }
 
@@ -241,17 +241,17 @@ func getIPAddress() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		
+
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
-		
+
 		for _, addr := range addrs {
 			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 				if ipnet.IP.To4() != nil {
@@ -260,7 +260,7 @@ func getIPAddress() (string, error) {
 			}
 		}
 	}
-	
+
 	return "未获取到IP", nil
 }
 
@@ -278,63 +278,98 @@ func formatBytes(bytes int64) string {
 }
 
 func GetNetworkInterfaces() ([]NetworkInterface, error) {
-	interfaces, err := net.Interfaces()
+	allInterfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	
-	var result []NetworkInterface
-	for _, iface := range interfaces {
-		ni := NetworkInterface{
-			Name:   iface.Name,
-			Status: "down",
+
+	var physicalInterfaces []NetworkInterface
+	for _, iface := range allInterfaces {
+		// 1. 排除Loopback接口
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
 		}
-		
-		if iface.Flags&net.FlagUp != 0 {
-			ni.Status = "up"
+
+		// 2. 通过sysfs检查是否为物理设备
+		devicePath := fmt.Sprintf("/sys/class/net/%s/device", iface.Name)
+		if _, err := os.Stat(devicePath); os.IsNotExist(err) {
+			continue // 不存在device目录，判定为虚拟网卡
 		}
-		
+
+		// 3. 获取IP地址
 		addrs, err := iface.Addrs()
-		if err == nil {
-			for _, addr := range addrs {
-				if ipnet, ok := addr.(*net.IPNet); ok {
-					if ipnet.IP.To4() != nil {
-						ni.IPv4 = ipnet.IP.String()
-					} else if ipnet.IP.To16() != nil {
-						ni.IPv6 = ipnet.IP.String()
-					}
+		if err != nil {
+			continue
+		}
+
+		var ipv4Addr string
+		var ipv6s []string
+		for _, addr := range addrs {
+			var ip net.IP
+			ipStr := addr.String()
+			ip, _, err := net.ParseCIDR(ipStr)
+			if err != nil {
+				ip = net.ParseIP(strings.Split(ipStr, "/")[0])
+			}
+
+			if ip == nil {
+				continue
+			}
+
+			if ip.To4() != nil {
+				// 只取第一个非本地链路的IPv4地址
+				if ipv4Addr == "" && !ip.IsLinkLocalUnicast() {
+					ipv4Addr = ip.String()
 				}
+			} else {
+				ipv6s = append(ipv6s, ip.String())
 			}
 		}
-		
-		result = append(result, ni)
+
+		status := "Down"
+		if iface.Flags&net.FlagUp != 0 {
+			status = "Up"
+		}
+		if iface.Flags&net.FlagRunning != 0 {
+			status += ", Running"
+		}
+
+		physicalInterfaces = append(physicalInterfaces, NetworkInterface{
+			Name:          iface.Name,
+			Status:        status,
+			MAC:           iface.HardwareAddr.String(),
+			IPv4Address:   ipv4Addr,
+			IPv6Addresses: ipv6s,
+		})
 	}
-	
-	return result, nil
+
+	return physicalInterfaces, nil
 }
 
+// NetworkInterface 包含了网络接口的详细信息
 type NetworkInterface struct {
-	Name   string
-	Status string
-	IPv4   string
-	IPv6   string
+	Name          string
+	Status        string
+	MAC           string
+	IPv4Address   string
+	IPv6Addresses []string
 }
 
 func TestNetworkConnectivity() (bool, error) {
-	return TestNetworkConnectivityWithTimeout(10 * time.Second)
+	return TestNetworkConnectivityWithTimeout(5 * time.Second)
 }
 
 func TestNetworkConnectivityWithTimeout(timeout time.Duration) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	
+
 	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", "3", "8.8.8.8")
 	err := cmd.Run()
-	
+
 	if ctx.Err() == context.DeadlineExceeded {
 		return false, fmt.Errorf("网络测试超时")
 	}
-	
+
 	return err == nil, err
 }
 
@@ -343,17 +378,17 @@ func RebootSystem() error {
 	if os.Getuid() != 0 {
 		return fmt.Errorf("需要root权限执行重启操作")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	cmd := exec.CommandContext(ctx, "reboot")
 	err := cmd.Run()
-	
+
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("重启命令执行超时")
 	}
-	
+
 	return err
 }
 
@@ -362,17 +397,17 @@ func ShutdownSystem() error {
 	if os.Getuid() != 0 {
 		return fmt.Errorf("需要root权限执行关机操作")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	cmd := exec.CommandContext(ctx, "shutdown", "-h", "now")
 	err := cmd.Run()
-	
+
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("关机命令执行超时")
 	}
-	
+
 	return err
 }
 
@@ -381,7 +416,7 @@ func RestartSystemService(serviceName string) error {
 	if os.Getuid() != 0 {
 		return fmt.Errorf("需要root权限重启系统服务")
 	}
-	
+
 	// 验证服务名称
 	if serviceName == "" {
 		return fmt.Errorf("服务名称不能为空")
@@ -393,16 +428,16 @@ func RestartSystemService(serviceName string) error {
 	if strings.ContainsAny(serviceName, "; | & $ ` ( ) [ ] { } < > ? * \\ \n \r \t") {
 		return fmt.Errorf("服务名称包含非法字符")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	cmd := exec.CommandContext(ctx, "systemctl", "restart", serviceName)
 	err := cmd.Run()
-	
+
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("重启服务超时")
 	}
-	
+
 	return err
 }

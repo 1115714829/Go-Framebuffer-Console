@@ -261,24 +261,38 @@ func (mr *MenuRenderer) generateConfigMenuContent() string {
 }
 
 func (mr *MenuRenderer) generateNetworkInfoContent(interfaces []system.NetworkInterface) string {
-	content := "============================\n"
-	content += "网卡信息\n"
-	content += "============================\n"
-
-	for _, iface := range interfaces {
-		content += fmt.Sprintf("网卡: %s\n", iface.Name)
-		content += fmt.Sprintf("状态: %s\n", iface.Status)
-		if iface.IPv4 != "" {
-			content += fmt.Sprintf("IPv4: %s\n", iface.IPv4)
-		}
-		if iface.IPv6 != "" {
-			content += fmt.Sprintf("IPv6: %s\n", iface.IPv6)
-		}
-		content += "----------------------------\n"
+	if len(interfaces) == 0 {
+		return "未找到任何物理网络接口。\n\n按任意键返回"
 	}
 
-	content += "按任意键返回配置菜单"
-	return content
+	var builder strings.Builder
+	builder.WriteString("物理网卡信息:\n")
+	builder.WriteString("========================================\n")
+
+	for _, iface := range interfaces {
+		builder.WriteString(fmt.Sprintf("接口名称: %s\n", iface.Name))
+		builder.WriteString(fmt.Sprintf("  状态: %s\n", iface.Status))
+		builder.WriteString(fmt.Sprintf("  MAC地址: %s\n", iface.MAC))
+
+		builder.WriteString("  IPv4地址:\n")
+		if iface.IPv4Address != "" {
+			builder.WriteString(fmt.Sprintf("    - %s\n", iface.IPv4Address))
+		} else {
+			builder.WriteString("    - (未配置)\n")
+		}
+
+		builder.WriteString("  IPv6地址:\n")
+		if len(iface.IPv6Addresses) > 0 {
+			for _, ip := range iface.IPv6Addresses {
+				builder.WriteString(fmt.Sprintf("    - %s\n", ip))
+			}
+		} else {
+			builder.WriteString("    - (未配置)\n")
+		}
+		builder.WriteString("----------------------------------------\n")
+	}
+	builder.WriteString("\n按任意键返回")
+	return builder.String()
 }
 
 func (mr *MenuRenderer) generateBuddha() string {
