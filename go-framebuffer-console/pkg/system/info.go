@@ -27,7 +27,7 @@ type SystemInfo struct {
 	DiskCount       int    // 物理磁盘设备数量
 	CurrentTime     string // 当前系统时间
 	IPAddress       string // 默认路由的IP地址
-	QianKunCloudID  string // 乾坤云设备ID
+	QianKunCloudID  string // 设备ID
 }
 
 func GetSystemInfo() (*SystemInfo, error) {
@@ -849,17 +849,17 @@ func getFirstNonLoopbackIP() (string, error) {
 	return "未获取到IP", nil
 }
 
-// getQianKunCloudID 读取乾坤云设备ID
+// getQianKunCloudID 读取设备ID
 func getQianKunCloudID() (string, error) {
-	data, err := os.ReadFile("/usr/QianKunCloud/subdomain")
+	data, err := os.ReadFile("/usr/local/etc/device/id")
 	if err != nil {
-		return "", fmt.Errorf("读取乾坤云设备ID失败: %v", err)
+		return "", fmt.Errorf("读取设备ID失败: %v", err)
 	}
 
-	subdomain := strings.TrimSpace(string(data))
-	if subdomain == "" {
-		return "", fmt.Errorf("乾坤云设备ID为空")
+	deviceID := strings.TrimSpace(string(data))
+	if deviceID == "" {
+		return "", fmt.Errorf("设备ID为空")
 	}
 
-	return subdomain, nil
+	return deviceID, nil
 }

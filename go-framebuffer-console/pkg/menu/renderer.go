@@ -419,7 +419,7 @@ func (mr *MenuRenderer) renderNewMainMenu(sysInfo *system.SystemInfo) error {
 		fmt.Sprintf("当前系统时间：%s", sysInfo.CurrentTime),
 		fmt.Sprintf("设备IP地址：%s", sysInfo.IPAddress),
 		"",
-		fmt.Sprintf("乾坤云设备ID：%s", sysInfo.QianKunCloudID),
+		fmt.Sprintf("设备ID：%s", sysInfo.QianKunCloudID),
 	}
 
 	for _, line := range systemContent {
@@ -459,7 +459,7 @@ func (mr *MenuRenderer) renderNewMainMenu(sysInfo *system.SystemInfo) error {
 
 	// 7. 客服信息
 	customerServiceContent := []string{
-		"如有问题请咨询乾坤云客服：微信：qiankunyunkefu",
+		"如有问题请咨询技术客服：微信：your-service-wechat",
 		"",
 		"按回车键进入配置菜单",
 	}
@@ -495,7 +495,7 @@ func (mr *MenuRenderer) renderQRCode(content string, x, y int) (int, error) {
 	currentY := y
 	
 	// 显示二维码说明
-	headerText := "此处为二维码展示，二维码的值为乾坤云设备ID"
+	headerText := "此处为二维码展示，二维码的值为设备ID"
 	if err := mr.renderTextAt(headerText, x, currentY); err != nil {
 		return currentY, err
 	}

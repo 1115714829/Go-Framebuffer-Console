@@ -23,14 +23,105 @@ import (
 )
 
 func initLog() {
-	logFile, err := os.OpenFile("console.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	// 清理旧日志文件
+	cleanupOldLogs()
+	
+	// 生成当前日志文件名
+	logFileName := getLogFileName()
+	
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		log.Fatalf("无法打开日志文件: %v", err)
 	}
 	log.SetOutput(logFile)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Println("==========================================")
-	log.Println("日志系统初始化完成")
+	log.Printf("日志系统初始化完成，日志文件: %s", logFileName)
+	
+	// 启动日志轮转goroutine
+	go logRotationWorker()
+}
+
+// getLogFileName 生成日志文件名（按日期）
+func getLogFileName() string {
+	today := time.Now().Format("2006-01-02")
+	return fmt.Sprintf("console-%s.log", today)
+}
+
+// cleanupOldLogs 清理3天前的日志文件
+func cleanupOldLogs() {
+	// 获取3天前的日期
+	cutoffDate := time.Now().AddDate(0, 0, -3)
+	
+	// 扫描当前目录下的日志文件
+	files, err := os.ReadDir(".")
+	if err != nil {
+		return // 忽略错误，继续运行
+	}
+	
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		
+		// 匹配日志文件格式：console-YYYY-MM-DD.log
+		fileName := file.Name()
+		if strings.HasPrefix(fileName, "console-") && strings.HasSuffix(fileName, ".log") {
+			// 提取日期部分
+			datePart := strings.TrimPrefix(fileName, "console-")
+			datePart = strings.TrimSuffix(datePart, ".log")
+			
+			// 解析日期
+			fileDate, err := time.Parse("2006-01-02", datePart)
+			if err != nil {
+				continue // 跳过不符合格式的文件
+			}
+			
+			// 如果文件日期早于截止日期，删除文件
+			if fileDate.Before(cutoffDate) {
+				if err := os.Remove(fileName); err == nil {
+					fmt.Printf("已删除旧日志文件: %s\n", fileName)
+				}
+			}
+		}
+	}
+}
+
+// logRotationWorker 日志轮转工作goroutine
+func logRotationWorker() {
+	for {
+		// 计算到下一个0点的时间
+		now := time.Now()
+		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+		sleepDuration := nextMidnight.Sub(now)
+		
+		// 等待到0点
+		time.Sleep(sleepDuration)
+		
+		// 执行日志轮转
+		rotateLog()
+	}
+}
+
+// rotateLog 执行日志轮转
+func rotateLog() {
+	// 清理旧日志
+	cleanupOldLogs()
+	
+	// 生成新的日志文件名
+	newLogFileName := getLogFileName()
+	
+	// 打开新的日志文件
+	newLogFile, err := os.OpenFile(newLogFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		// 如果打开失败，继续使用旧文件
+		return
+	}
+	
+	// 切换日志输出
+	log.SetOutput(newLogFile)
+	log.Println("==========================================")
+	log.Printf("日志轮转完成，新日志文件: %s", newLogFileName)
 }
 
 // Application 主应用程序结构体
