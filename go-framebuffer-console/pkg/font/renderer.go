@@ -12,6 +12,7 @@ import (
 
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
 )
 
 // Renderer 字体渲染器结构体
@@ -71,9 +72,9 @@ func NewRenderer(fontPath string, size float64, dpi float64) (*Renderer, error) 
 
 	// 创建FreeType渲染上下文
 	c := freetype.NewContext()
-	c.SetFont(f)         // 设置字体
-	c.SetFontSize(size)  // 设置字体大小
-	c.SetDPI(dpi)        // 设置分辨率
+	c.SetFont(f)        // 设置字体
+	c.SetFontSize(size) // 设置字体大小
+	c.SetDPI(dpi)       // 设置分辨率
 
 	return &Renderer{
 		font:    f,
@@ -87,46 +88,31 @@ func NewRenderer(fontPath string, size float64, dpi float64) (*Renderer, error) 
 // 参数size: 新的字体大小（点）
 // 动态调整渲染器的字体大小，用于不同场景的文字显示
 func (r *Renderer) SetSize(size float64) {
-	r.size = size                // 更新内部字体大小记录
-	r.context.SetFontSize(size)  // 更新FreeType上下文的字体大小
+	r.size = size               // 更新内部字体大小记录
+	r.context.SetFontSize(size) // 更新FreeType上下文的字体大小
 }
 
-// GetTextBounds 计算文本的边界尺寸
+// GetTextBounds 使用现代的 `golang.org/x/image/font` 库来精确计算文本的边界尺寸
 // 参数text: 要测量的文本字符串
 // 返回文本的宽度和高度（像素）
-// 支持中文字符的精确测量，考虑字符间距和行高
+// 这个方法能正确处理kerning等高级字体特性，确保尺寸的精确性
 func (r *Renderer) GetTextBounds(text string) (int, int) {
-	// 创建字体渲染选项
-	opts := truetype.Options{
-		Size: r.size,  // 字体大小
-		DPI:  r.dpi,   // 分辨率
-	}
-	// 创建字体面（Face）对象
-	face := truetype.NewFace(r.font, &opts)
-	
-	width := 0                           // 文本总宽度
-	height := int(r.size * r.dpi / 72)   // 基础行高
-	
-	// 遍历每个字符，累计宽度并计算最大高度
-	for _, char := range text {
-		// 获取字符的边界框和前进宽度
-		bounds, advance, _ := face.GlyphBounds(char)
-		// 检查字符高度，更新最大高度
-		if bounds.Max.Y > bounds.Min.Y {
-			h := int((bounds.Max.Y - bounds.Min.Y) >> 6)  // 转换为像素
-			if h > height {
-				height = h
-			}
-		}
-		// 累加字符宽度
-		width += int(advance >> 6)  // 转换为像素
-	}
-	
-	// 增加额外的宽度边距，确保文本不被截断
-	width += int(r.size * 0.5)  // 增加字体大小一半的宽度作为边距
-	height += int(r.size * 0.2) // 增加字体大小20%的高度作为边距
-	
-	return width, height
+	face := truetype.NewFace(r.font, &truetype.Options{
+		Size:    r.size,
+		DPI:     r.dpi,
+		Hinting: font.HintingFull, // 使用完整的字体微调，以获得最精确的尺寸
+	})
+
+	bounds, advance := font.BoundString(face, text)
+
+	// advance 是画笔前进的距离，这是最准确的行宽度
+	width := int(advance >> 6) // 从 26.6 fixed-point 格式转换为 int pixels
+
+	// bounds 描述的是实际像素占用的矩形区域，我们可以用它来获取高度
+	height := int((bounds.Max.Y - bounds.Min.Y) >> 6)
+
+	// 为宽度和高度增加一点额外的边距，确保文本不被截断
+	return width + 2, height + 2
 }
 
 // RenderText 渲染单行文本为图像
@@ -142,15 +128,15 @@ func (r *Renderer) RenderText(text string, textColor color.Color) (image.Image, 
 		width = 100
 		height = int(r.size)
 	}
-	
+
 	// 创建RGBA图像，额外添加10像素高度以防止裁剪
 	img := image.NewRGBA(image.Rect(0, 0, width, height+10))
 	// 用透明色填充背景
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{0, 0, 0, 0}}, image.Point{}, draw.Src)
 
 	// 设置FreeType渲染参数
-	r.context.SetClip(img.Bounds())           // 设置裁剪区域
-	r.context.SetDst(img)                     // 设置目标图像
+	r.context.SetClip(img.Bounds())             // 设置裁剪区域
+	r.context.SetDst(img)                       // 设置目标图像
 	r.context.SetSrc(&image.Uniform{textColor}) // 设置文本颜色
 
 	// 计算文本基线位置
@@ -176,27 +162,28 @@ func (r *Renderer) RenderMultilineText(lines []string, textColor color.Color, li
 		return image.NewRGBA(image.Rect(0, 0, 1, 1)), nil
 	}
 
-	maxWidth := 0                            // 最大行宽
-	totalHeight := 0                         // 总高度
-	lineHeight := int(r.size) + lineSpacing  // 单行高度（包含行间距）
+	face := truetype.NewFace(r.font, &truetype.Options{Size: r.size, DPI: r.dpi})
+	metrics := face.Metrics()
+	// 使用字体文件中定义的标准行高，这是最可靠的方式
+	fontLineHeight := int(metrics.Height >> 6)
 
-	// 计算所有行的尺寸，确定图像大小
+	maxWidth := 0
 	for _, line := range lines {
-		w, h := r.GetTextBounds(line)
-		// 更新最大宽度
+		w, _ := r.GetTextBounds(line) // 只需要宽度用于计算画布最大宽度
 		if w > maxWidth {
 			maxWidth = w
 		}
-		// 累加总高度
-		totalHeight += h + lineSpacing
 	}
+
+	// 根据标准行高计算总高度
+	totalHeight := (fontLineHeight + lineSpacing) * len(lines)
 
 	// 设置默认尺寸（防止计算失败）
 	if maxWidth == 0 {
 		maxWidth = 100
 	}
 	if totalHeight == 0 {
-		totalHeight = lineHeight * len(lines)
+		totalHeight = 20 * len(lines)
 	}
 
 	// 创建图像并填充透明背景
@@ -204,19 +191,21 @@ func (r *Renderer) RenderMultilineText(lines []string, textColor color.Color, li
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{0, 0, 0, 0}}, image.Point{}, draw.Src)
 
 	// 设置FreeType渲染参数
-	r.context.SetClip(img.Bounds())             // 设置裁剪区域
-	r.context.SetDst(img)                       // 设置目标图像
-	r.context.SetSrc(&image.Uniform{textColor}) // 设置文本颜色
+	r.context.SetClip(img.Bounds())
+	r.context.SetDst(img)
+	r.context.SetSrc(&image.Uniform{textColor})
 
 	// 逐行绘制文本
-	y := int(r.context.PointToFixed(r.size) >> 6)  // 第一行基线位置
+	ascent := int(metrics.Ascent >> 6)
+	y := ascent // 第一行的基线位置
 	for _, line := range lines {
-		pt := freetype.Pt(0, y)  // 当前行的绘制位置
+		pt := freetype.Pt(0, y) // 当前行的绘制位置
 		_, err := r.context.DrawString(line, pt)
 		if err != nil {
 			return nil, fmt.Errorf("无法绘制文本行: %v", err)
 		}
-		y += lineHeight  // 移动到下一行
+		// 根据标准行高移动到下一行
+		y += fontLineHeight + lineSpacing
 	}
 
 	return img, nil

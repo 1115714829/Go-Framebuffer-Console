@@ -92,19 +92,10 @@ func NewApplication() (*Application, error) {
 	// 2. 根据屏幕高度动态计算字体大小
 	width, height := app.fb.GetDimensions()
 	log.Printf("检测到屏幕分辨率: %d x %d", width, height)
-	// 以768p高度下字体大小为14作为基准
-	baseHeight := 768.0
-	baseFontSize := 14.0
-	dynamicFontSize := baseFontSize * (float64(height) / baseHeight)
 
-	// 限制字体大小在合理范围内 (例如, 10到36)
-	if dynamicFontSize < 10 {
-		dynamicFontSize = 10
-	} else if dynamicFontSize > 36 {
-		dynamicFontSize = 36
-	}
-	app.config.FontSize = dynamicFontSize
-	log.Printf("动态设置字体大小为: %.2f", dynamicFontSize)
+	// 根据用户要求，使用固定的14号字体
+	app.config.FontSize = 14.0
+	log.Printf("使用固定字体大小: %.2f", app.config.FontSize)
 
 	// 3. 使用动态计算出的字体大小初始化字体渲染器
 	if err := app.initFontRenderer(); err != nil {
