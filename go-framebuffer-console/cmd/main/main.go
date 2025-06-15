@@ -184,13 +184,15 @@ func (app *Application) initKeyboard() error {
 
 func (app *Application) setupSignalHandler() {
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	// 监听所有可能导致程序退出的信号
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGTSTP, syscall.SIGQUIT)
 	go func() {
 		for {
 			select {
 			case sig := <-c:
-				if app.disableCtrlC && (sig == os.Interrupt) {
-					log.Printf("接收到Ctrl+C信号，但退出功能已禁用，继续运行")
+				// 如果禁用了退出功能，则拦截所有退出信号
+				if app.disableCtrlC {
+					log.Printf("接收到信号: %v，但退出功能已禁用，继续运行", sig)
 					continue // 不退出，继续监听
 				}
 				log.Printf("接收到信号: %v，开始优雅退出", sig)
@@ -303,10 +305,31 @@ func (app *Application) Run() error {
 				}
 			case 3: // Ctrl+C
 				if !app.disableCtrlC {
-					log.Printf("检测到Ctrl+C，程序即将退出")
+					log.Printf("在主页面检测到Ctrl+C，程序即将退出")
 					app.cancel()
 				} else {
-					log.Printf("检测到Ctrl+C，但退出功能已禁用")
+					log.Printf("在主页面检测到Ctrl+C，但退出功能已禁用")
+				}
+			case 26: // Ctrl+Z
+				if app.disableCtrlC {
+					log.Printf("在主页面检测到Ctrl+Z，但退出功能已禁用")
+				} else {
+					log.Printf("在主页面检测到Ctrl+Z，程序即将退出")
+					app.cancel()
+				}
+			case 28: // Ctrl+\
+				if app.disableCtrlC {
+					log.Printf("在主页面检测到Ctrl+\\，但退出功能已禁用")
+				} else {
+					log.Printf("在主页面检测到Ctrl+\\，程序即将退出")
+					app.cancel()
+				}
+			case 4: // Ctrl+D (EOF)
+				if app.disableCtrlC {
+					log.Printf("在主页面检测到Ctrl+D，但退出功能已禁用")
+				} else {
+					log.Printf("在主页面检测到Ctrl+D，程序即将退出")
+					app.cancel()
 				}
 			}
 		}
@@ -353,17 +376,16 @@ func (app *Application) showNetworkInfo() error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在网卡信息页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "网卡信息页面") {
+			return nil // 控制键触发退出
 		}
 		
 		// 其他任意按键都返回
@@ -385,17 +407,16 @@ func (app *Application) showSystemServiceMenu() error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在系统服务菜单页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "系统服务菜单页面") {
+			return nil // 控制键触发退出
 		}
 		
 		// 其他任意按键都返回
@@ -432,17 +453,16 @@ func (app *Application) testNetworkConnectivity() error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在网络测试结果页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "网络测试结果页面") {
+			return nil // 控制键触发退出
 		}
 		
 		// 其他任意按键都返回
@@ -509,17 +529,16 @@ func (app *Application) confirmAndReboot() error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在重启确认页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "重启确认页面") {
+			return nil // 控制键触发退出
 		}
 		
 		if key == 'y' || key == 'Y' {
@@ -545,17 +564,16 @@ func (app *Application) confirmAndShutdown() error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在关机确认页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "关机确认页面") {
+			return nil // 控制键触发退出
 		}
 		
 		if key == 'y' || key == 'Y' {
@@ -578,17 +596,16 @@ func (app *Application) showMessage(message string) error {
 		return err
 	}
 
-	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	// 循环等待按键，处理控制键
 	for {
 		key, err := app.keyboard.ReadKey()
 		if err != nil {
 			return err
 		}
 		
-		// 如果是Ctrl+C且禁用了退出功能，则忽略
-		if key == 3 && app.disableCtrlC {
-			log.Printf("在消息页面检测到Ctrl+C，但退出功能已禁用")
-			continue
+		// 处理控制键
+		if app.handleControlKey(key, "消息页面") {
+			return nil // 控制键触发退出
 		}
 		
 		// 其他任意按键都返回
@@ -627,6 +644,11 @@ func (app *Application) enterConfigMenu(ticker *time.Ticker) error {
 		// 我们改为从keyEventChan读取
 		select {
 		case key := <-app.keyEventChan:
+			// 处理控制键
+			if app.handleControlKey(key, "配置菜单") {
+				return nil // 控制键触发退出
+			}
+			
 			var choice int
 			switch key {
 			case '1', '2', '3', '4', '5':
@@ -651,6 +673,50 @@ func (app *Application) enterConfigMenu(ticker *time.Ticker) error {
 
 func (app *Application) isContextError(err error) bool {
 	return err == context.Canceled || err == context.DeadlineExceeded
+}
+
+// handleControlKey 处理控制键，如果禁用了退出功能则拦截，否则退出程序
+// 返回true表示应该退出当前函数，false表示继续处理
+func (app *Application) handleControlKey(key byte, location string) bool {
+	switch key {
+	case 3: // Ctrl+C
+		if app.disableCtrlC {
+			log.Printf("在%s检测到Ctrl+C，但退出功能已禁用", location)
+			return false // 继续运行
+		} else {
+			log.Printf("在%s检测到Ctrl+C，程序即将退出", location)
+			app.cancel()
+			return true // 退出当前函数
+		}
+	case 26: // Ctrl+Z
+		if app.disableCtrlC {
+			log.Printf("在%s检测到Ctrl+Z，但退出功能已禁用", location)
+			return false // 继续运行
+		} else {
+			log.Printf("在%s检测到Ctrl+Z，程序即将退出", location)
+			app.cancel()
+			return true // 退出当前函数
+		}
+	case 28: // Ctrl+\
+		if app.disableCtrlC {
+			log.Printf("在%s检测到Ctrl+\\，但退出功能已禁用", location)
+			return false // 继续运行
+		} else {
+			log.Printf("在%s检测到Ctrl+\\，程序即将退出", location)
+			app.cancel()
+			return true // 退出当前函数
+		}
+	case 4: // Ctrl+D (EOF)
+		if app.disableCtrlC {
+			log.Printf("在%s检测到Ctrl+D，但退出功能已禁用", location)
+			return false // 继续运行
+		} else {
+			log.Printf("在%s检测到Ctrl+D，程序即将退出", location)
+			app.cancel()
+			return true // 退出当前函数
+		}
+	}
+	return false // 不是控制键，继续处理
 }
 
 func (app *Application) isRunning() bool {
