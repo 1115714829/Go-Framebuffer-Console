@@ -10,6 +10,7 @@ import (
 	"go-framebuffer-console/pkg/font"
 	"go-framebuffer-console/pkg/framebuffer"
 	"go-framebuffer-console/pkg/system"
+	"rsc.io/qr"
 )
 
 type MenuRenderer struct {
@@ -42,25 +43,19 @@ func (mr *MenuRenderer) RenderMainMenu(sysInfo *system.SystemInfo) error {
 	mr.renderer.SetSize(14)
 
 	// 生成当前内容
-	currentContent := mr.generateMainMenuContent(sysInfo)
+	currentContent := mr.generateNewMainMenuContent(sysInfo)
 
 	// 检查是否需要刷新
 	if currentContent == mr.lastContent && mr.staticRendered {
 		return nil // 内容没有变化，无需刷新
 	}
 
-	// 如果是首次渲染或内容完全变化，需要清屏
-	if mr.needsClear || !mr.staticRendered {
-		mr.fb.Clear()
-		mr.needsClear = false
-	}
+	// 清屏并重新渲染
+	mr.fb.Clear()
+	mr.needsClear = false
 
-	// 分区域渲染
-	if err := mr.renderStaticContent(); err != nil {
-		return err
-	}
-
-	if err := mr.renderDynamicContent(sysInfo); err != nil {
+	// 按新格式渲染整个主菜单
+	if err := mr.renderNewMainMenu(sysInfo); err != nil {
 		return err
 	}
 
@@ -377,4 +372,180 @@ func (mr *MenuRenderer) drawRect(img *image.RGBA, x, y, width, height int, col c
 			}
 		}
 	}
+}
+
+// generateNewMainMenuContent 生成新的主菜单内容（用于内容比较）
+func (mr *MenuRenderer) generateNewMainMenuContent(sysInfo *system.SystemInfo) string {
+	return fmt.Sprintf(
+		"%s|%s|%d|%s|%s|%d|%s|%s|%s",
+		sysInfo.Uptime,
+		sysInfo.CPUModel,
+		sysInfo.CPUCores,
+		sysInfo.MemoryUsage,
+		sysInfo.DiskSize,
+		sysInfo.DiskCount,
+		sysInfo.CurrentTime,
+		sysInfo.IPAddress,
+		sysInfo.QianKunCloudID,
+	)
+}
+
+// renderNewMainMenu 按新格式渲染主菜单
+func (mr *MenuRenderer) renderNewMainMenu(sysInfo *system.SystemInfo) error {
+	// 计算汉字宽度作为上边距
+	_, charHeight := mr.renderer.GetTextBounds("字")
+	y := charHeight + 10 // 上边距为1个汉字的高度加10像素
+
+	// 1. 系统信息标题
+	titleContent := "系统信息"
+	if err := mr.renderTextAt(titleContent, 20, y); err != nil {
+		return err
+	}
+	y += charHeight + 5
+
+	// 2. 第一条分隔线
+	separatorLine := "================================"
+	if err := mr.renderTextAt(separatorLine, 20, y); err != nil {
+		return err
+	}
+	y += charHeight + 5
+
+	// 3. 系统信息内容
+	systemContent := []string{
+		fmt.Sprintf("操作系统运行时间：%s", sysInfo.Uptime),
+		fmt.Sprintf("处理器型号：%s *%d 核", sysInfo.CPUModel, sysInfo.CPUCores),
+		fmt.Sprintf("内存使用状态：%s", sysInfo.MemoryUsage),
+		fmt.Sprintf("系统安装磁盘大小：%s（共%d个磁盘）", sysInfo.DiskSize, sysInfo.DiskCount),
+		fmt.Sprintf("当前系统时间：%s", sysInfo.CurrentTime),
+		fmt.Sprintf("设备IP地址：%s", sysInfo.IPAddress),
+		"",
+		fmt.Sprintf("乾坤云设备ID：%s", sysInfo.QianKunCloudID),
+	}
+
+	for _, line := range systemContent {
+		if err := mr.renderTextAt(line, 20, y); err != nil {
+			return err
+		}
+		y += charHeight + 3
+	}
+
+	// 4. 第二条分隔线
+	if err := mr.renderTextAt(separatorLine, 20, y); err != nil {
+		return err
+	}
+	y += charHeight + 10
+
+	// 5. 生成并显示二维码
+	if sysInfo.QianKunCloudID != "" && sysInfo.QianKunCloudID != "未获取到" {
+		qrY, err := mr.renderQRCode(sysInfo.QianKunCloudID, 20, y)
+		if err != nil {
+			return err
+		}
+		y = qrY + 20
+	} else {
+		// 如果无法获取设备ID，显示提示信息
+		if err := mr.renderTextAt("二维码生成失败：无法获取乾坤云设备ID", 20, y); err != nil {
+			return err
+		}
+		y += charHeight + 20
+	}
+
+	// 6. 第三条分隔线
+	separatorLine2 := "==============================="
+	if err := mr.renderTextAt(separatorLine2, 20, y); err != nil {
+		return err
+	}
+	y += charHeight + 10
+
+	// 7. 客服信息
+	customerServiceContent := []string{
+		"如有问题请咨询乾坤云客服：微信：qiankunyunkefu",
+		"",
+		"按回车键进入配置菜单",
+	}
+
+	for _, line := range customerServiceContent {
+		if err := mr.renderTextAt(line, 20, y); err != nil {
+			return err
+		}
+		y += charHeight + 3
+	}
+
+	return nil
+}
+
+// renderTextAt 在指定位置渲染文本
+func (mr *MenuRenderer) renderTextAt(text string, x, y int) error {
+	if text == "" {
+		return nil // 空行不渲染
+	}
+
+	textImg, err := mr.renderer.RenderText(text, color.RGBA{255, 255, 255, 255})
+	if err != nil {
+		return fmt.Errorf("failed to render text '%s': %v", text, err)
+	}
+
+	mr.fb.DrawImage(textImg, x, y)
+	return nil
+}
+
+// renderQRCode 生成并渲染二维码
+func (mr *MenuRenderer) renderQRCode(content string, x, y int) (int, error) {
+	// 计算二维码的显示区域
+	currentY := y
+	
+	// 显示二维码说明
+	headerText := "此处为二维码展示，二维码的值为乾坤云设备ID"
+	if err := mr.renderTextAt(headerText, x, currentY); err != nil {
+		return currentY, err
+	}
+	
+	_, charHeight := mr.renderer.GetTextBounds("字")
+	currentY += charHeight + 10
+	
+	// 使用rsc.io/qr生成二维码
+	code, err := qr.Encode(content, qr.M)
+	if err != nil {
+		// 如果生成失败，显示错误信息
+		if err := mr.renderTextAt(fmt.Sprintf("二维码生成失败: %v", err), x, currentY); err != nil {
+			return currentY, err
+		}
+		return currentY + charHeight, nil
+	}
+	
+	// 计算二维码尺寸
+	qrSize := code.Size
+	pixelSize := 4 // 每个二维码像素放大4倍
+	border := 2 * pixelSize // 左右边距各2个像素单位
+	
+	// 创建二维码图像（白色背景）
+	totalWidth := qrSize*pixelSize + border*2
+	totalHeight := qrSize*pixelSize + border*2
+	
+	qrImg := image.NewRGBA(image.Rect(0, 0, totalWidth, totalHeight))
+	
+	// 填充白色背景
+	draw.Draw(qrImg, qrImg.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
+	
+	// 绘制二维码像素
+	for qy := 0; qy < qrSize; qy++ {
+		for qx := 0; qx < qrSize; qx++ {
+			if code.Black(qx, qy) {
+				// 绘制黑色像素块
+				for py := 0; py < pixelSize; py++ {
+					for px := 0; px < pixelSize; px++ {
+						imgX := border + qx*pixelSize + px
+						imgY := border + qy*pixelSize + py
+						qrImg.Set(imgX, imgY, color.RGBA{0, 0, 0, 255})
+					}
+				}
+			}
+		}
+	}
+	
+	// 将二维码图像绘制到帧缓冲区
+	mr.fb.DrawImage(qrImg, x, currentY)
+	
+	// 返回二维码结束位置
+	return currentY + totalHeight, nil
 }

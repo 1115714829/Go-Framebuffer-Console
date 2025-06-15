@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -28,34 +29,52 @@ func initLog() {
 	}
 	log.SetOutput(logFile)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.Println("==========================================")
 	log.Println("日志系统初始化完成")
 }
 
 // Application 主应用程序结构体
 // 包含了程序运行所需的所有核心组件
 type Application struct {
-	config       *config.Config           // 配置管理器
-	fb           *framebuffer.FrameBuffer // 帧缓冲区操作对象
-	fontRenderer *font.Renderer           // 字体渲染器
-	keyboard     *input.KeyboardInput     // 键盘输入处理器
-	menuRenderer *menu.MenuRenderer       // 菜单渲染器
-	ctx          context.Context          // 上下文管理器
-	cancel       context.CancelFunc       // 取消函数
-	mu           sync.RWMutex             // 读写锁
-	running      bool                     // 运行状态
-	keyEventChan chan byte                // 键盘事件通道
+	config         *config.Config           // 配置管理器
+	fb             *framebuffer.FrameBuffer // 帧缓冲区操作对象
+	fontRenderer   *font.Renderer           // 字体渲染器
+	keyboard       *input.KeyboardInput     // 键盘输入处理器
+	menuRenderer   *menu.MenuRenderer       // 菜单渲染器
+	ctx            context.Context          // 上下文管理器
+	cancel         context.CancelFunc       // 取消函数
+	mu             sync.RWMutex             // 读写锁
+	running        bool                     // 运行状态
+	keyEventChan   chan byte                // 键盘事件通道
+	disableCtrlC   bool                     // 是否禁用Ctrl+C退出功能
 }
 
 // main 主函数 - 程序入口点
 // 负责初始化应用程序并启动主运行循环
 func main() {
+	// 解析命令行参数
+	var disableCtrlC = flag.Bool("d", false, "禁用Ctrl+C退出功能，使程序持续运行")
+	var showHelp = flag.Bool("h", false, "显示帮助信息")
+	flag.Usage = printUsage
+	flag.Parse()
+
+	// 显示帮助信息
+	if *showHelp {
+		printUsage()
+		return
+	}
+
 	initLog()
 
+	// 记录启动参数
+	log.Printf("程序启动，参数: 禁用Ctrl+C = %v", *disableCtrlC)
+
 	// 创建并初始化应用程序
-	app, err := NewApplication()
+	app, err := NewApplication(*disableCtrlC)
 	if err != nil {
 		log.Fatalf("应用程序初始化失败: %v", err)
 	}
+	log.Printf("应用程序初始化成功，禁用Ctrl+C = %v", app.disableCtrlC)
 	// 确保程序退出时清理资源
 	defer func() {
 		if r := recover(); r != nil {
@@ -73,7 +92,26 @@ func main() {
 	}
 }
 
-func NewApplication() (*Application, error) {
+// printUsage 打印使用帮助信息
+func printUsage() {
+	fmt.Printf("Go Framebuffer Console - 系统状态监控应用\n\n")
+	fmt.Printf("用法:\n")
+	fmt.Printf("  %s [选项]\n\n", os.Args[0])
+	fmt.Printf("选项:\n")
+	fmt.Printf("  -d    禁用Ctrl+C退出功能，使程序持续运行（默认启用Ctrl+C退出）\n")
+	fmt.Printf("  -h    显示此帮助信息\n\n")
+	fmt.Printf("示例:\n")
+	fmt.Printf("  %s           # 正常运行，支持Ctrl+C退出\n", os.Args[0])
+	fmt.Printf("  %s -d        # 运行并禁用Ctrl+C退出功能\n", os.Args[0])
+	fmt.Printf("  %s -h        # 显示帮助信息\n\n", os.Args[0])
+	fmt.Printf("说明:\n")
+	fmt.Printf("  - 默认情况下，可以使用Ctrl+C或在配置菜单中退出程序\n")
+	fmt.Printf("  - 使用-d参数后，只能通过配置菜单退出程序\n")
+	fmt.Printf("  - 程序每5秒自动刷新系统状态信息\n")
+	fmt.Printf("  - 按回车键进入配置菜单进行系统管理\n")
+}
+
+func NewApplication(disableCtrlC bool) (*Application, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &Application{
 		config:       config.NewConfig(),
@@ -81,6 +119,7 @@ func NewApplication() (*Application, error) {
 		cancel:       cancel,
 		running:      false,
 		keyEventChan: make(chan byte, 1),
+		disableCtrlC: disableCtrlC,
 	}
 
 	// 1. 首先初始化Framebuffer来获取屏幕尺寸
@@ -147,19 +186,25 @@ func (app *Application) setupSignalHandler() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		select {
-		case sig := <-c:
-			log.Printf("接收到信号: %v，开始优雅退出", sig)
-			app.mu.Lock()
-			app.running = false
-			app.mu.Unlock()
-			app.cancel()
-			// 给程序时间进行清理
-			time.Sleep(1 * time.Second)
-			app.Cleanup()
-			os.Exit(0)
-		case <-app.ctx.Done():
-			return
+		for {
+			select {
+			case sig := <-c:
+				if app.disableCtrlC && (sig == os.Interrupt) {
+					log.Printf("接收到Ctrl+C信号，但退出功能已禁用，继续运行")
+					continue // 不退出，继续监听
+				}
+				log.Printf("接收到信号: %v，开始优雅退出", sig)
+				app.mu.Lock()
+				app.running = false
+				app.mu.Unlock()
+				app.cancel()
+				// 给程序时间进行清理
+				time.Sleep(1 * time.Second)
+				app.Cleanup()
+				os.Exit(0)
+			case <-app.ctx.Done():
+				return
+			}
 		}
 	}()
 }
@@ -257,8 +302,12 @@ func (app *Application) Run() error {
 					log.Printf("返回主菜单时刷新失败: %v", err)
 				}
 			case 3: // Ctrl+C
-				log.Printf("检测到Ctrl+C，程序即将退出")
-				app.cancel()
+				if !app.disableCtrlC {
+					log.Printf("检测到Ctrl+C，程序即将退出")
+					app.cancel()
+				} else {
+					log.Printf("检测到Ctrl+C，但退出功能已禁用")
+				}
 			}
 		}
 	}
@@ -304,8 +353,22 @@ func (app *Application) showNetworkInfo() error {
 		return err
 	}
 
-	_, err = app.keyboard.ReadKey()
-	return err
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
+			return err
+		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在网卡信息页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		// 其他任意按键都返回
+		return nil
+	}
 }
 
 func (app *Application) showSystemServiceMenu() error {
@@ -322,8 +385,22 @@ func (app *Application) showSystemServiceMenu() error {
 		return err
 	}
 
-	_, err := app.keyboard.ReadKey()
-	return err
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
+			return err
+		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在系统服务菜单页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		// 其他任意按键都返回
+		return nil
+	}
 }
 
 func (app *Application) testNetworkConnectivity() error {
@@ -355,8 +432,22 @@ func (app *Application) testNetworkConnectivity() error {
 		return err
 	}
 
-	_, err = app.keyboard.ReadKey()
-	return err
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
+			return err
+		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在网络测试结果页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		// 其他任意按键都返回
+		return nil
+	}
 }
 
 // formatNetworkTestResults 格式化网络测试结果
@@ -418,21 +509,31 @@ func (app *Application) confirmAndReboot() error {
 		return err
 	}
 
-	key, err := app.keyboard.ReadKey()
-	if err != nil {
-		return err
-	}
-
-	if key == 'y' || key == 'Y' {
-		if err := app.menuRenderer.RenderMessage("正在重启设备..."); err != nil {
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
 			return err
 		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在重启确认页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		if key == 'y' || key == 'Y' {
+			if err := app.menuRenderer.RenderMessage("正在重启设备..."); err != nil {
+				return err
+			}
 
-		time.Sleep(2 * time.Second)
-		return system.RebootSystem()
+			time.Sleep(2 * time.Second)
+			return system.RebootSystem()
+		}
+
+		// 其他任意按键都取消
+		return nil
 	}
-
-	return nil
 }
 
 func (app *Application) confirmAndShutdown() error {
@@ -444,21 +545,31 @@ func (app *Application) confirmAndShutdown() error {
 		return err
 	}
 
-	key, err := app.keyboard.ReadKey()
-	if err != nil {
-		return err
-	}
-
-	if key == 'y' || key == 'Y' {
-		if err := app.menuRenderer.RenderMessage("正在关机..."); err != nil {
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
 			return err
 		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在关机确认页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		if key == 'y' || key == 'Y' {
+			if err := app.menuRenderer.RenderMessage("正在关机..."); err != nil {
+				return err
+			}
 
-		time.Sleep(2 * time.Second)
-		return system.ShutdownSystem()
+			time.Sleep(2 * time.Second)
+			return system.ShutdownSystem()
+		}
+
+		// 其他任意按键都取消
+		return nil
 	}
-
-	return nil
 }
 
 func (app *Application) showMessage(message string) error {
@@ -467,8 +578,22 @@ func (app *Application) showMessage(message string) error {
 		return err
 	}
 
-	_, err := app.keyboard.ReadKey()
-	return err
+	// 循环等待按键，忽略Ctrl+C如果禁用了退出功能
+	for {
+		key, err := app.keyboard.ReadKey()
+		if err != nil {
+			return err
+		}
+		
+		// 如果是Ctrl+C且禁用了退出功能，则忽略
+		if key == 3 && app.disableCtrlC {
+			log.Printf("在消息页面检测到Ctrl+C，但退出功能已禁用")
+			continue
+		}
+		
+		// 其他任意按键都返回
+		return nil
+	}
 }
 
 func (app *Application) enterConfigMenu(ticker *time.Ticker) error {

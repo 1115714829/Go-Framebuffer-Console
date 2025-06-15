@@ -19,14 +19,15 @@ import (
 // SystemInfo 系统信息结构体
 // 包含了系统运行状态、硬件配置、网络信息等核心数据
 type SystemInfo struct {
-	Uptime      string // 系统运行时间（格式化为天、小时、分钟）
-	CPUModel    string // CPU型号名称
-	CPUCores    int    // CPU核心数量
-	MemoryUsage string // 内存使用情况（百分比和具体数值）
-	DiskSize    string // 根分区磁盘大小
-	DiskCount   int    // 磁盘设备数量
-	CurrentTime string // 当前系统时间
-	IPAddress   string // 主要网络接口的IP地址
+	Uptime          string // 系统运行时间（格式化为天、小时、分钟）
+	CPUModel        string // CPU型号名称
+	CPUCores        int    // CPU核心数量
+	MemoryUsage     string // 内存使用情况（MB单位）
+	DiskSize        string // 物理磁盘总大小
+	DiskCount       int    // 物理磁盘设备数量
+	CurrentTime     string // 当前系统时间
+	IPAddress       string // 默认路由的IP地址
+	QianKunCloudID  string // 乾坤云设备ID
 }
 
 func GetSystemInfo() (*SystemInfo, error) {
@@ -44,12 +45,12 @@ func GetSystemInfo() (*SystemInfo, error) {
 		info.CPUCores = runtime.NumCPU()
 	}
 
-	info.MemoryUsage, err = getMemoryUsage()
+	info.MemoryUsage, err = getMemoryUsageMB()
 	if err != nil {
 		info.MemoryUsage = "未知"
 	}
 
-	info.DiskSize, info.DiskCount, err = getDiskInfo()
+	info.DiskSize, info.DiskCount, err = getPhysicalDiskInfo()
 	if err != nil {
 		info.DiskSize = "未知"
 		info.DiskCount = 0
@@ -57,9 +58,14 @@ func GetSystemInfo() (*SystemInfo, error) {
 
 	info.CurrentTime = time.Now().Format("2006-01-02 15:04:05")
 
-	info.IPAddress, err = getIPAddress()
+	info.IPAddress, err = getDefaultRouteIP()
 	if err != nil {
 		info.IPAddress = "未知"
+	}
+
+	info.QianKunCloudID, err = getQianKunCloudID()
+	if err != nil {
+		info.QianKunCloudID = "未获取到"
 	}
 
 	return info, nil
@@ -589,4 +595,271 @@ func RestartSystemService(serviceName string) error {
 	}
 
 	return err
+}
+
+// getMemoryUsageMB 获取内存使用状态（MB单位）
+func getMemoryUsageMB() (string, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return "", fmt.Errorf("读取内存信息失败: %v", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var memTotal, memAvailable int64
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "MemTotal:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if val, parseErr := strconv.ParseInt(fields[1], 10, 64); parseErr == nil {
+					memTotal = val
+				}
+			}
+		}
+		if strings.HasPrefix(line, "MemAvailable:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				if val, parseErr := strconv.ParseInt(fields[1], 10, 64); parseErr == nil {
+					memAvailable = val
+				}
+			}
+		}
+	}
+
+	if memTotal <= 0 {
+		return "未知", nil
+	}
+	if memAvailable < 0 || memAvailable > memTotal {
+		memAvailable = 0
+	}
+
+	memUsed := memTotal - memAvailable
+	// 转换为MB（KB转MB）
+	memUsedMB := memUsed / 1024
+	memTotalMB := memTotal / 1024
+
+	return fmt.Sprintf("%dM/%dMB", memUsedMB, memTotalMB), nil
+}
+
+// getPhysicalDiskInfo 获取物理磁盘信息
+func getPhysicalDiskInfo() (string, int, error) {
+	// 读取/proc/partitions获取所有分区信息
+	data, err := os.ReadFile("/proc/partitions")
+	if err != nil {
+		return "", 0, fmt.Errorf("读取磁盘分区信息失败: %v", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	diskSizes := make(map[string]int64) // 磁盘名称 -> 大小(KB)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "major") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+
+		deviceName := fields[3]
+		sizeKB, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			continue
+		}
+
+		// 只统计物理磁盘（排除分区）
+		// 物理磁盘特征：sda, sdb, nvme0n1, nvme1n1等，不包含数字结尾的分区
+		if isPhysicalDisk(deviceName) {
+			diskSizes[deviceName] = sizeKB
+		}
+	}
+
+	if len(diskSizes) == 0 {
+		return "未知", 0, nil
+	}
+
+	var totalSizeKB int64
+	for _, size := range diskSizes {
+		totalSizeKB += size
+	}
+
+	// 转换为合适的单位
+	diskSize := formatDiskSize(totalSizeKB * 1024) // KB转Bytes
+	diskCount := len(diskSizes)
+
+	return diskSize, diskCount, nil
+}
+
+// isPhysicalDisk 判断是否为物理磁盘
+func isPhysicalDisk(deviceName string) bool {
+	// 排除loop设备、ram设备等虚拟设备
+	if strings.HasPrefix(deviceName, "loop") ||
+		strings.HasPrefix(deviceName, "ram") ||
+		strings.HasPrefix(deviceName, "dm-") {
+		return false
+	}
+
+	// SATA/SAS磁盘：sda, sdb, sdc等（不包含sda1, sda2等分区）
+	if strings.HasPrefix(deviceName, "sd") && len(deviceName) == 3 {
+		return true
+	}
+
+	// NVMe磁盘：nvme0n1, nvme1n1等（不包含nvme0n1p1等分区）
+	if strings.HasPrefix(deviceName, "nvme") && strings.Contains(deviceName, "n") && !strings.Contains(deviceName, "p") {
+		return true
+	}
+
+	// IDE磁盘：hda, hdb等
+	if strings.HasPrefix(deviceName, "hd") && len(deviceName) == 3 {
+		return true
+	}
+
+	return false
+}
+
+// formatDiskSize 格式化磁盘大小
+func formatDiskSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	
+	units := "KMGTPE"
+	if exp < len(units) {
+		return fmt.Sprintf("%.0f%c", float64(bytes)/float64(div), units[exp])
+	}
+	return fmt.Sprintf("%d B", bytes)
+}
+
+// getDefaultRouteIP 获取设备本身的IP地址（通过默认路由的网卡）
+func getDefaultRouteIP() (string, error) {
+	// 执行ip route命令获取默认路由
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "ip", "route", "show", "default")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("获取默认路由失败: %v", err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	var defaultDevice string
+	
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// 解析默认路由行，格式通常为：default via 192.168.1.1 dev eth0
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field == "dev" && i+1 < len(fields) {
+				defaultDevice = fields[i+1]
+				break
+			}
+		}
+		if defaultDevice != "" {
+			break
+		}
+	}
+
+	// 如果找到了默认路由的设备，获取该设备的IP地址
+	if defaultDevice != "" {
+		return getDeviceIP(defaultDevice)
+	}
+
+	// 如果没有找到默认路由，尝试获取第一个非回环接口的IP
+	return getFirstNonLoopbackIP()
+}
+
+// getDeviceIP 获取指定网卡设备的IP地址
+func getDeviceIP(deviceName string) (string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+
+	for _, iface := range interfaces {
+		if iface.Name != deviceName {
+			continue
+		}
+
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String(), nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("未找到设备 %s 的IP地址", deviceName)
+}
+
+// getFirstNonLoopbackIP 获取第一个非回环接口的IP
+func getFirstNonLoopbackIP() (string, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					return ipnet.IP.String(), nil
+				}
+			}
+		}
+	}
+
+	return "未获取到IP", nil
+}
+
+// getQianKunCloudID 读取乾坤云设备ID
+func getQianKunCloudID() (string, error) {
+	data, err := os.ReadFile("/usr/QianKunCloud/subdomain")
+	if err != nil {
+		return "", fmt.Errorf("读取乾坤云设备ID失败: %v", err)
+	}
+
+	subdomain := strings.TrimSpace(string(data))
+	if subdomain == "" {
+		return "", fmt.Errorf("乾坤云设备ID为空")
+	}
+
+	return subdomain, nil
 }
