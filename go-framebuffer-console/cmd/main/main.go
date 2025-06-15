@@ -461,9 +461,6 @@ func (app *Application) enterConfigMenu(ticker *time.Ticker) error {
 			}
 		case <-app.ctx.Done():
 			return nil
-		case <-time.After(30 * time.Second):
-			log.Printf("配置菜单超时，自动返回主界面")
-			return nil
 		}
 	}
 }
