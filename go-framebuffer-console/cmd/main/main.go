@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,23 +21,36 @@ import (
 	"go-framebuffer-console/pkg/system"
 )
 
+func initLog() {
+	logFile, err := os.OpenFile("console.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("无法打开日志文件: %v", err)
+	}
+	log.SetOutput(logFile)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	log.Println("日志系统初始化完成")
+}
+
 // Application 主应用程序结构体
 // 包含了程序运行所需的所有核心组件
 type Application struct {
-	config       *config.Config             // 配置管理器
-	fb           *framebuffer.FrameBuffer   // 帧缓冲区操作对象
-	fontRenderer *font.Renderer             // 字体渲染器
-	keyboard     *input.KeyboardInput       // 键盘输入处理器
-	menuRenderer *menu.MenuRenderer         // 菜单渲染器
-	ctx          context.Context            // 上下文管理器
-	cancel       context.CancelFunc         // 取消函数
-	mu           sync.RWMutex               // 读写锁
-	running      bool                       // 运行状态
+	config       *config.Config           // 配置管理器
+	fb           *framebuffer.FrameBuffer // 帧缓冲区操作对象
+	fontRenderer *font.Renderer           // 字体渲染器
+	keyboard     *input.KeyboardInput     // 键盘输入处理器
+	menuRenderer *menu.MenuRenderer       // 菜单渲染器
+	ctx          context.Context          // 上下文管理器
+	cancel       context.CancelFunc       // 取消函数
+	mu           sync.RWMutex             // 读写锁
+	running      bool                     // 运行状态
+	keyEventChan chan byte                // 键盘事件通道
 }
 
 // main 主函数 - 程序入口点
 // 负责初始化应用程序并启动主运行循环
 func main() {
+	initLog()
+
 	// 创建并初始化应用程序
 	app, err := NewApplication()
 	if err != nil {
@@ -62,27 +76,49 @@ func main() {
 func NewApplication() (*Application, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &Application{
-		config:  config.NewConfig(),
-		ctx:     ctx,
-		cancel:  cancel,
-		running: false,
+		config:       config.NewConfig(),
+		ctx:          ctx,
+		cancel:       cancel,
+		running:      false,
+		keyEventChan: make(chan byte, 1),
 	}
 
+	// 1. 首先初始化Framebuffer来获取屏幕尺寸
 	if err := app.initFramebuffer(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize framebuffer: %v", err)
 	}
 
+	// 2. 根据屏幕高度动态计算字体大小
+	width, height := app.fb.GetDimensions()
+	log.Printf("检测到屏幕分辨率: %d x %d", width, height)
+	// 以768p高度下字体大小为14作为基准
+	baseHeight := 768.0
+	baseFontSize := 14.0
+	dynamicFontSize := baseFontSize * (float64(height) / baseHeight)
+
+	// 限制字体大小在合理范围内 (例如, 10到36)
+	if dynamicFontSize < 10 {
+		dynamicFontSize = 10
+	} else if dynamicFontSize > 36 {
+		dynamicFontSize = 36
+	}
+	app.config.FontSize = dynamicFontSize
+	log.Printf("动态设置字体大小为: %.2f", dynamicFontSize)
+
+	// 3. 使用动态计算出的字体大小初始化字体渲染器
 	if err := app.initFontRenderer(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize font renderer: %v", err)
 	}
 
+	// 4. 初始化键盘
 	if err := app.initKeyboard(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to initialize keyboard: %v", err)
 	}
 
+	// 5. 初始化菜单渲染器
 	app.menuRenderer = menu.NewMenuRenderer(app.fb, app.fontRenderer)
 
 	return app, nil
@@ -137,10 +173,54 @@ func (app *Application) setupSignalHandler() {
 	}()
 }
 
+func (app *Application) startKeyboardListener() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("键盘监听goroutine异常: %v", r)
+		}
+	}()
+
+	for {
+		// 检查上下文是否已取消
+		select {
+		case <-app.ctx.Done():
+			return
+		default:
+		}
+
+		// 使用带超时的非阻塞读取，避免永久阻塞
+		key, available, err := app.keyboard.ReadKeyNonBlockingWithTimeout(100 * time.Millisecond)
+		if err != nil {
+			if app.isContextError(err) || !app.isRunning() {
+				return
+			}
+			// 只有在不是预期的中断错误时才记录日志
+			if !strings.Contains(err.Error(), "interrupted system call") && !strings.Contains(err.Error(), "select调用失败") {
+				log.Printf("读取键盘输入时发生错误: %v", err)
+			}
+			continue
+		}
+
+		if available {
+			// 将按键事件发送到通道
+			select {
+			case app.keyEventChan <- key:
+			case <-app.ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+				// 超时，防止阻塞
+			}
+		}
+	}
+}
+
 func (app *Application) Run() error {
 	app.mu.Lock()
 	app.running = true
 	app.mu.Unlock()
+
+	// 启动键盘监听
+	go app.startKeyboardListener()
 
 	// 创建5秒定时器用于自动刷新
 	ticker := time.NewTicker(5 * time.Second)
@@ -151,42 +231,44 @@ func (app *Application) Run() error {
 		return fmt.Errorf("初始显示主菜单失败: %v", err)
 	}
 
-	// 启动键盘输入处理协程
-	keyboardChan := make(chan byte, 10)
-	keyboardErrChan := make(chan error, 1)
-	
-	go app.keyboardInputHandler(keyboardChan, keyboardErrChan)
+	log.Printf("系统状态监控已启动，每5秒自动刷新")
 
 	for {
 		select {
 		case <-app.ctx.Done():
+			log.Printf("接收到退出信号，程序即将退出")
 			return nil
 		case <-ticker.C:
 			// 5秒定时器触发，刷新系统状态
-			app.mu.RLock()
-			if app.running {
-				app.mu.RUnlock()
+			if app.isRunning() {
+				// 强制使缓存失效，确保重新渲染
+				app.menuRenderer.InvalidateCache()
 				if err := app.showMainMenu(); err != nil {
-					// 只在严重错误时记录，避免干扰屏幕
-					return fmt.Errorf("刷新系统状态失败: %v", err)
+					log.Printf("自动刷新系统状态失败: %v", err)
 				}
-			} else {
-				app.mu.RUnlock()
 			}
-		case key := <-keyboardChan:
+		case key := <-app.keyEventChan:
+			// 如果程序当前不在运行状态（例如在配置菜单中），则忽略按键
+			if !app.isRunning() {
+				continue
+			}
 			// 处理键盘输入
-			if err := app.handleKeypress(key); err != nil {
-				if app.isContextError(err) {
-					return nil
+			switch key {
+			case '\n', '\r':
+				// 按下回车键，进入配置菜单
+				log.Printf("检测到回车键，进入配置菜单")
+				if err := app.enterConfigMenu(ticker); err != nil {
+					log.Printf("配置菜单操作失败: %v", err)
 				}
-				return fmt.Errorf("处理键盘输入失败: %v", err)
+				// 从配置菜单返回后，立即刷新主菜单
+				app.menuRenderer.InvalidateCache()
+				if err := app.showMainMenu(); err != nil {
+					log.Printf("返回主菜单时刷新失败: %v", err)
+				}
+			case 3: // Ctrl+C
+				log.Printf("检测到Ctrl+C，程序即将退出")
+				app.cancel()
 			}
-		case err := <-keyboardErrChan:
-			// 键盘输入错误
-			if app.isContextError(err) {
-				return nil
-			}
-			return fmt.Errorf("键盘输入错误: %v", err)
 		}
 	}
 }
@@ -259,7 +341,7 @@ func (app *Application) testNetworkConnectivity() error {
 	}
 
 	connected, err := system.TestNetworkConnectivity()
-	
+
 	var message string
 	if err != nil {
 		message = fmt.Sprintf("网络测试失败: %v\n\n按任意键返回", err)
@@ -295,7 +377,7 @@ func (app *Application) confirmAndReboot() error {
 		if err := app.menuRenderer.RenderMessage("正在重启设备..."); err != nil {
 			return err
 		}
-		
+
 		time.Sleep(2 * time.Second)
 		return system.RebootSystem()
 	}
@@ -321,7 +403,7 @@ func (app *Application) confirmAndShutdown() error {
 		if err := app.menuRenderer.RenderMessage("正在关机..."); err != nil {
 			return err
 		}
-		
+
 		time.Sleep(2 * time.Second)
 		return system.ShutdownSystem()
 	}
@@ -339,63 +421,70 @@ func (app *Application) showMessage(message string) error {
 	return err
 }
 
-func (app *Application) checkKeyboardInput() error {
-	key, available, err := app.keyboard.ReadKeyNonBlocking()
-	if err != nil {
-		return fmt.Errorf("读取键盘输入失败: %v", err)
-	}
-	
-	if available {
-		switch key {
-		case '\n', '\r':
-			// 按下回车键，进入配置菜单
-			log.Printf("检测到回车键，进入配置菜单")
-			return app.enterConfigMenu()
-		case 'q', 'Q', 27: // 'q' 或 'Q' 或 ESC 键
-			log.Printf("检测到退出键，程序即将退出")
-			app.cancel()
-			return nil
-		default:
-			// 忽略其他按键
-		}
-	}
-	
-	return nil
-}
+func (app *Application) enterConfigMenu(ticker *time.Ticker) error {
+	// 标记程序状态为非运行（暂停主界面的任何活动）
+	app.mu.Lock()
+	app.running = false
+	app.mu.Unlock()
 
-func (app *Application) enterConfigMenu() error {
+	// 函数退出时恢复状态并重启定时器
+	defer func() {
+		app.mu.Lock()
+		app.running = true
+		app.mu.Unlock()
+		ticker.Reset(5 * time.Second)
+		log.Printf("已退出配置菜单，恢复主界面自动刷新")
+	}()
+
+	// 暂停主屏幕的自动刷新
+	ticker.Stop()
+	log.Printf("已进入配置菜单，暂停主界面自动刷新")
+
 	for {
 		// 显示配置菜单
 		if err := app.showConfigMenu(); err != nil {
 			return fmt.Errorf("显示配置菜单失败: %v", err)
 		}
 
-		// 等待用户选择
-		choice, err := app.keyboard.WaitForMenuChoiceWithTimeout(30 * time.Second)
-		if err != nil {
-			log.Printf("配置菜单等待用户输入超时: %v", err)
-			break // 超时返回主界面
-		}
+		// 等待用户选择 (1-5, q)
+		// 注意：这里的WaitForKey是阻塞的，它会阻止Run循环的进行
+		// 但由于我们在独立的goroutine中监听键盘，这里需要换一种方式
+		// 我们改为从keyEventChan读取
+		select {
+		case key := <-app.keyEventChan:
+			var choice int
+			switch key {
+			case '1', '2', '3', '4', '5':
+				choice = int(key - '0')
+			case 'q', 'Q', 27: // q, Q, ESC
+				return nil // 退出配置菜单
+			default:
+				continue // 忽略其他键
+			}
 
-		if choice == -1 {
-			// 用户选择退出配置菜单
-			break
-		}
-
-		// 处理菜单选择
-		if err := app.handleMenuChoice(choice); err != nil {
-			log.Printf("处理菜单选择失败: %v", err)
-			// 显示错误信息后继续
-			app.showMessage(fmt.Sprintf("操作失败: %v", err))
+			// 处理菜单选择
+			if err := app.handleMenuChoice(choice); err != nil {
+				log.Printf("处理菜单选择失败: %v", err)
+				// 显示错误信息后继续
+				app.showMessage(fmt.Sprintf("操作失败: %v", err))
+			}
+		case <-app.ctx.Done():
+			return nil
+		case <-time.After(30 * time.Second):
+			log.Printf("配置菜单超时，自动返回主界面")
+			return nil
 		}
 	}
-	
-	// 返回主界面前刷新一次状态
-	return app.showMainMenu()
 }
 
 func (app *Application) isContextError(err error) bool {
 	return err == context.Canceled || err == context.DeadlineExceeded
+}
+
+func (app *Application) isRunning() bool {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	return app.running
 }
 
 func (app *Application) Cleanup() {

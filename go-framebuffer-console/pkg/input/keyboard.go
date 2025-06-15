@@ -15,12 +15,12 @@ import (
 // KeyboardInput 键盘输入处理器结构体
 // 封装了终端设备和相关的配置信息
 type KeyboardInput struct {
-	device     *os.File         // 终端设备文件句柄（通常为/dev/stdin）
-	ttyDevice  *os.File         // TTY设备文件句柄（用于写入控制序列）
-	oldTermios syscall.Termios  // 原始终端属性，用于恢复设置
-	mu         sync.Mutex       // 保护并发访问
-	closed     bool             // 关闭状态标志
-	restored   bool             // 终端状态恢复标志
+	device     *os.File        // 终端设备文件句柄（通常为/dev/stdin）
+	ttyDevice  *os.File        // TTY设备文件句柄（用于写入控制序列）
+	oldTermios syscall.Termios // 原始终端属性，用于恢复设置
+	mu         sync.Mutex      // 保护并发访问
+	closed     bool            // 关闭状态标志
+	restored   bool            // 终端状态恢复标志
 }
 
 // InputEvent 输入事件结构体
@@ -58,7 +58,7 @@ const (
 // 返回初始化完成的键盘输入器或错误信息
 func NewKeyboardInput() (*KeyboardInput, error) {
 	ki := &KeyboardInput{} // 创建键盘输入器实例
-	
+
 	var err error
 	// 打开标准输入设备（终端）
 	ki.device, err = os.OpenFile("/dev/stdin", os.O_RDONLY, 0)
@@ -90,7 +90,7 @@ func NewKeyboardInput() (*KeyboardInput, error) {
 // 禁用行编辑、回显和特殊字符处理，实现字符级的实时输入
 func (ki *KeyboardInput) setRawMode() error {
 	fd := int(ki.device.Fd()) // 获取文件描述符
-	
+
 	// 获取当前终端属性（用于后续恢复）
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
 		uintptr(fd),
@@ -107,8 +107,8 @@ func (ki *KeyboardInput) setRawMode() error {
 	// 禁用输入模式标志：流控制等
 	newTermios.Iflag &^= syscall.IXON | syscall.IXOFF | syscall.IXANY
 	// 设置特殊字符：最少读取1个字符，无超时
-	newTermios.Cc[syscall.VMIN] = 1   // 最少读取字符数
-	newTermios.Cc[syscall.VTIME] = 0  // 读取超时时间（0表示阻塞）
+	newTermios.Cc[syscall.VMIN] = 1  // 最少读取字符数
+	newTermios.Cc[syscall.VTIME] = 0 // 读取超时时间（0表示阻塞）
 
 	// 应用新的终端属性
 	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL,
@@ -130,11 +130,11 @@ func (ki *KeyboardInput) setRawMode() error {
 func (ki *KeyboardInput) ReadKey() (byte, error) {
 	ki.mu.Lock()
 	defer ki.mu.Unlock()
-	
+
 	if ki.closed || ki.device == nil {
 		return 0, fmt.Errorf("键盘设备已关闭")
 	}
-	
+
 	buf := make([]byte, 1)
 	n, err := ki.device.Read(buf)
 	if err != nil {
@@ -149,33 +149,33 @@ func (ki *KeyboardInput) ReadKey() (byte, error) {
 func (ki *KeyboardInput) ReadKeyNonBlocking() (byte, bool, error) {
 	ki.mu.Lock()
 	defer ki.mu.Unlock()
-	
+
 	if ki.closed || ki.device == nil {
 		return 0, false, fmt.Errorf("键盘设备已关闭")
 	}
-	
+
 	buf := make([]byte, 1)
 	fd := int(ki.device.Fd())
-	
+
 	// 检查文件描述符的有效性
 	if fd < 0 {
 		return 0, false, fmt.Errorf("无效的文件描述符")
 	}
-	
+
 	var readfds syscall.FdSet
 	readfds.Bits[fd/64] |= 1 << (uint(fd) % 64)
-	
+
 	timeout := syscall.Timeval{Sec: 0, Usec: 0}
-	
+
 	n, err := syscall.Select(fd+1, &readfds, nil, nil, &timeout)
 	if err != nil {
 		return 0, false, fmt.Errorf("select调用失败: %v", err)
 	}
-	
+
 	if n == 0 {
 		return 0, false, nil
 	}
-	
+
 	n2, err := ki.device.Read(buf)
 	if err != nil {
 		return 0, false, fmt.Errorf("读取数据失败: %v", err)
@@ -183,7 +183,51 @@ func (ki *KeyboardInput) ReadKeyNonBlocking() (byte, bool, error) {
 	if n2 == 0 {
 		return 0, false, nil
 	}
-	
+
+	return buf[0], true, nil
+}
+
+func (ki *KeyboardInput) ReadKeyNonBlockingWithTimeout(timeout time.Duration) (byte, bool, error) {
+	ki.mu.Lock()
+	defer ki.mu.Unlock()
+
+	if ki.closed || ki.device == nil {
+		return 0, false, fmt.Errorf("键盘设备已关闭")
+	}
+
+	buf := make([]byte, 1)
+	fd := int(ki.device.Fd())
+
+	if fd < 0 {
+		return 0, false, fmt.Errorf("无效的文件描述符")
+	}
+
+	var readfds syscall.FdSet
+	readfds.Bits[fd/64] |= 1 << (uint(fd) % 64)
+
+	tv := syscall.NsecToTimeval(timeout.Nanoseconds())
+
+	n, err := syscall.Select(fd+1, &readfds, nil, nil, &tv)
+	if err != nil {
+		// EINTR 表示系统调用被信号中断，这在我们的场景中是正常现象，不应视为错误
+		if errno, ok := err.(syscall.Errno); ok && errno == syscall.EINTR {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("select调用失败: %v", err)
+	}
+
+	if n == 0 {
+		return 0, false, nil // 超时
+	}
+
+	n2, err := ki.device.Read(buf)
+	if err != nil {
+		return 0, false, fmt.Errorf("读取数据失败: %v", err)
+	}
+	if n2 == 0 {
+		return 0, false, nil
+	}
+
 	return buf[0], true, nil
 }
 
@@ -198,24 +242,24 @@ func (ki *KeyboardInput) WaitForKeyWithTimeout(timeout time.Duration, keys ...by
 		if time.Since(start) > timeout {
 			return 0, fmt.Errorf("等待键盘输入超时")
 		}
-		
+
 		key, available, err := ki.ReadKeyNonBlocking()
 		if err != nil {
 			return 0, err
 		}
-		
+
 		if available {
 			if len(keys) == 0 {
 				return key, nil
 			}
-			
+
 			for _, validKey := range keys {
 				if key == validKey {
 					return key, nil
 				}
 			}
 		}
-		
+
 		// 短暂睡眠避免占用CPU
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -232,7 +276,7 @@ func (ki *KeyboardInput) WaitForEnterWithContext(ctx context.Context) error {
 		_, err := ki.WaitForKey('\n', '\r')
 		done <- err
 	}()
-	
+
 	select {
 	case err := <-done:
 		return err
@@ -252,12 +296,12 @@ func (ki *KeyboardInput) WaitForMenuChoiceWithTimeout(timeout time.Duration) (in
 		if time.Since(start) > timeout {
 			return 0, fmt.Errorf("等待菜单选择超时")
 		}
-		
+
 		key, available, err := ki.ReadKeyNonBlocking()
 		if err != nil {
 			return 0, err
 		}
-		
+
 		if available {
 			switch key {
 			case '1':
@@ -276,7 +320,7 @@ func (ki *KeyboardInput) WaitForMenuChoiceWithTimeout(timeout time.Duration) (in
 				return 0, nil
 			}
 		}
-		
+
 		// 短暂睡眠避免占用CPU
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -285,20 +329,20 @@ func (ki *KeyboardInput) WaitForMenuChoiceWithTimeout(timeout time.Duration) (in
 func (ki *KeyboardInput) Close() error {
 	ki.mu.Lock()
 	defer ki.mu.Unlock()
-	
+
 	if ki.closed {
 		return nil // 已经关闭
 	}
-	
+
 	var err error
-	
+
 	// 先恢复终端状态
 	if !ki.restored {
 		if restoreErr := ki.restoreTerminalUnsafe(); restoreErr != nil {
 			err = fmt.Errorf("恢复终端状态失败: %v", restoreErr)
 		}
 	}
-	
+
 	// 关闭设备
 	if ki.device != nil {
 		if closeErr := ki.device.Close(); closeErr != nil {
@@ -310,7 +354,7 @@ func (ki *KeyboardInput) Close() error {
 		}
 		ki.device = nil
 	}
-	
+
 	// 关闭TTY设备
 	if ki.ttyDevice != nil && ki.ttyDevice != os.Stdout {
 		if closeErr := ki.ttyDevice.Close(); closeErr != nil {
@@ -322,7 +366,7 @@ func (ki *KeyboardInput) Close() error {
 		}
 		ki.ttyDevice = nil
 	}
-	
+
 	ki.closed = true
 	return err
 }
@@ -337,15 +381,15 @@ func (ki *KeyboardInput) restoreTerminalUnsafe() error {
 	if ki.device == nil || ki.restored {
 		return nil
 	}
-	
+
 	fd := int(ki.device.Fd())
 	if fd < 0 {
 		return fmt.Errorf("无效的文件描述符")
 	}
-	
+
 	// 先恢复光标显示
 	ki.showCursor()
-	
+
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
 		uintptr(fd),
 		TCSETS,
@@ -353,7 +397,7 @@ func (ki *KeyboardInput) restoreTerminalUnsafe() error {
 	if errno != 0 {
 		return fmt.Errorf("failed to restore terminal: %v", errno)
 	}
-	
+
 	ki.restored = true
 	return nil
 }
