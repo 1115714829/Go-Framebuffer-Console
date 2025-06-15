@@ -355,6 +355,28 @@ type NetworkInterface struct {
 	IPv6Addresses []string
 }
 
+// NetworkTestTarget 网络测试目标
+type NetworkTestTarget struct {
+	Name        string // 显示名称
+	Host        string // 主机地址
+	Description string // 描述
+}
+
+// NetworkTestResult 网络测试结果
+type NetworkTestResult struct {
+	Target       NetworkTestTarget
+	Success      bool
+	PacketsSent  int
+	PacketsRecv  int
+	PacketLoss   float64
+	AvgLatency   string
+	ErrorMsg     string
+}
+
+// NetworkTestProgress 网络测试进度回调
+type NetworkTestProgress func(target string, current, total int, message string)
+
+// TestNetworkConnectivity 简单网络测试（保持向后兼容）
 func TestNetworkConnectivity() (bool, error) {
 	return TestNetworkConnectivityWithTimeout(5 * time.Second)
 }
@@ -371,6 +393,133 @@ func TestNetworkConnectivityWithTimeout(timeout time.Duration) (bool, error) {
 	}
 
 	return err == nil, err
+}
+
+// TestAdvancedNetworkConnectivity 高级网络连通性测试
+func TestAdvancedNetworkConnectivity(progressCallback NetworkTestProgress) ([]NetworkTestResult, error) {
+	// 定义测试目标
+	targets := []NetworkTestTarget{
+		{Name: "字节跳动", Host: "bytedance.com", Description: "字节跳动官网"},
+		{Name: "百度", Host: "baidu.com", Description: "百度首页"},
+		{Name: "哔哩哔哩", Host: "bilibili.com", Description: "哔哩哔哩"},
+		{Name: "腾讯", Host: "tencent.com", Description: "腾讯官网"},
+		{Name: "阿里DNS", Host: "223.5.5.5", Description: "阿里云DNS服务器"},
+	}
+
+	results := make([]NetworkTestResult, len(targets))
+	
+	for i, target := range targets {
+		if progressCallback != nil {
+			progressCallback(target.Name, i+1, len(targets), fmt.Sprintf("正在测试 %s...", target.Description))
+		}
+		
+		result := testSingleTarget(target)
+		results[i] = result
+		
+		if progressCallback != nil {
+			status := "成功"
+			if !result.Success {
+				status = "失败"
+			}
+			progressCallback(target.Name, i+1, len(targets), fmt.Sprintf("%s 测试%s", target.Description, status))
+		}
+	}
+	
+	return results, nil
+}
+
+// testSingleTarget 测试单个目标
+func testSingleTarget(target NetworkTestTarget) NetworkTestResult {
+	result := NetworkTestResult{
+		Target:      target,
+		PacketsSent: 4,
+		PacketsRecv: 0,
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	
+	// 使用ping命令测试，发送4个包
+	cmd := exec.CommandContext(ctx, "ping", "-c", "4", "-W", "3", target.Host)
+	output, err := cmd.CombinedOutput()
+	
+	if ctx.Err() == context.DeadlineExceeded {
+		result.ErrorMsg = "测试超时"
+		result.PacketLoss = 100.0
+		return result
+	}
+	
+	if err != nil {
+		result.ErrorMsg = fmt.Sprintf("ping失败: %v", err)
+		result.PacketLoss = 100.0
+		return result
+	}
+	
+	// 解析ping输出结果
+	outputStr := string(output)
+	result.Success = true
+	
+	// 解析统计信息
+	if strings.Contains(outputStr, "packets transmitted") {
+		lines := strings.Split(outputStr, "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			
+			// 解析包统计: "4 packets transmitted, 4 received, 0% packet loss"
+			if strings.Contains(line, "packets transmitted") && strings.Contains(line, "received") {
+				fields := strings.Fields(line)
+				for i, field := range fields {
+					if field == "received," && i > 0 {
+						if recv, parseErr := strconv.Atoi(fields[i-1]); parseErr == nil {
+							result.PacketsRecv = recv
+						}
+					}
+					if strings.HasSuffix(field, "%") && strings.Contains(line, "packet loss") {
+						lossStr := strings.TrimSuffix(field, "%")
+						if loss, parseErr := strconv.ParseFloat(lossStr, 64); parseErr == nil {
+							result.PacketLoss = loss
+						}
+					}
+				}
+			}
+			
+			// 解析延迟统计: "round-trip min/avg/max/stddev = 1.234/2.345/3.456/0.123 ms"
+			if strings.Contains(line, "round-trip") && strings.Contains(line, "=") {
+				parts := strings.Split(line, "=")
+				if len(parts) > 1 {
+					latencyPart := strings.TrimSpace(parts[1])
+					latencyValues := strings.Split(latencyPart, "/")
+					if len(latencyValues) >= 2 {
+						result.AvgLatency = fmt.Sprintf("%.1f ms", parseFloat(latencyValues[1]))
+					}
+				}
+			}
+		}
+	}
+	
+	// 如果丢包率大于0，标记为部分失败
+	if result.PacketLoss > 0 {
+		if result.PacketLoss == 100 {
+			result.Success = false
+			result.ErrorMsg = "所有数据包丢失"
+		} else {
+			result.ErrorMsg = fmt.Sprintf("%.1f%% 数据包丢失", result.PacketLoss)
+		}
+	}
+	
+	if result.AvgLatency == "" {
+		result.AvgLatency = "N/A"
+	}
+	
+	return result
+}
+
+// parseFloat 安全解析浮点数
+func parseFloat(s string) float64 {
+	if val, err := strconv.ParseFloat(s, 64); err == nil {
+		return val
+	}
+	return 0.0
 }
 
 func RebootSystem() error {

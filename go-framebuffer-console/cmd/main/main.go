@@ -327,27 +327,86 @@ func (app *Application) showSystemServiceMenu() error {
 }
 
 func (app *Application) testNetworkConnectivity() error {
-	if err := app.menuRenderer.RenderMessage("正在测试网络连接..."); err != nil {
+	// 显示开始测试的消息
+	if err := app.menuRenderer.RenderMessage("正在初始化网络连通性测试...\n\n请稍候..."); err != nil {
 		return err
 	}
 
-	connected, err := system.TestNetworkConnectivity()
-
-	var message string
-	if err != nil {
-		message = fmt.Sprintf("网络测试失败: %v\n\n按任意键返回", err)
-	} else if connected {
-		message = "网络连接正常！\n\n按任意键返回"
-	} else {
-		message = "网络连接异常！\n\n按任意键返回"
+	// 创建进度回调函数
+	progressCallback := func(target string, current, total int, message string) {
+		progressText := fmt.Sprintf("网络连通性测试进度: %d/%d\n\n当前测试: %s\n%s", current, total, target, message)
+		app.menuRenderer.RenderMessage(progressText)
 	}
 
-	if err := app.menuRenderer.RenderMessage(message); err != nil {
+	// 执行高级网络测试
+	results, err := system.TestAdvancedNetworkConnectivity(progressCallback)
+	if err != nil {
+		message := fmt.Sprintf("网络测试执行失败: %v\n\n按任意键返回", err)
+		if err := app.menuRenderer.RenderMessage(message); err != nil {
+			return err
+		}
+		_, err = app.keyboard.ReadKey()
+		return err
+	}
+
+	// 格式化并显示测试结果
+	resultMessage := app.formatNetworkTestResults(results)
+	if err := app.menuRenderer.RenderMessage(resultMessage); err != nil {
 		return err
 	}
 
 	_, err = app.keyboard.ReadKey()
 	return err
+}
+
+// formatNetworkTestResults 格式化网络测试结果
+func (app *Application) formatNetworkTestResults(results []system.NetworkTestResult) string {
+	var builder strings.Builder
+	builder.WriteString("=== 网络连通性测试结果 ===\n\n")
+
+	successCount := 0
+	for _, result := range results {
+		// 状态显示
+		status := "异常"
+		if result.Success && result.PacketLoss == 0 {
+			status = "正常"
+			successCount++
+		} else if result.Success && result.PacketLoss > 0 {
+			status = "部分正常"
+		}
+
+		builder.WriteString(fmt.Sprintf("• %s (%s):\n", result.Target.Name, result.Target.Host))
+		builder.WriteString(fmt.Sprintf("  状态: %s\n", status))
+		
+		if result.Success || result.PacketsRecv > 0 {
+			builder.WriteString(fmt.Sprintf("  数据包: 发送%d 接收%d 丢失%.1f%%\n", 
+				result.PacketsSent, result.PacketsRecv, result.PacketLoss))
+			if result.AvgLatency != "N/A" && result.AvgLatency != "" {
+				builder.WriteString(fmt.Sprintf("  平均延迟: %s\n", result.AvgLatency))
+			}
+		}
+		
+		if result.ErrorMsg != "" {
+			builder.WriteString(fmt.Sprintf("  详情: %s\n", result.ErrorMsg))
+		}
+		builder.WriteString("\n")
+	}
+
+	// 总结
+	builder.WriteString("----------------------------------------\n")
+	if successCount == len(results) {
+		builder.WriteString("✓ 网络连接状态: 良好\n")
+		builder.WriteString("所有测试目标均可正常访问")
+	} else if successCount > 0 {
+		builder.WriteString("⚠ 网络连接状态: 部分异常\n")
+		builder.WriteString(fmt.Sprintf("可访问 %d/%d 个测试目标", successCount, len(results)))
+	} else {
+		builder.WriteString("✗ 网络连接状态: 异常\n")
+		builder.WriteString("所有测试目标均无法访问")
+	}
+
+	builder.WriteString("\n\n按任意键返回")
+	return builder.String()
 }
 
 func (app *Application) confirmAndReboot() error {
